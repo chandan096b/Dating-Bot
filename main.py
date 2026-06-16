@@ -1,29 +1,22 @@
+    import os
 import telebot
 from telebot import types
 import sqlite3
-from threading import Thread
-from http.server import HTTPServer, BaseHTTPRequestHandler
+from flask import Flask, request
 
 # --- 1. CONFIGURATION ---
 API_TOKEN = 'YOUR_HTTP_API_TOKEN_HERE'  # Yahan apna token daalein
-bot = telebot.TeleBot(8577130556:AAFngAVPyWvSJ1qalCSZmtW2T2lPO4Jm8wE)
+bot = telebot.TeleBot(API_TOKEN)
 
-# --- DUMMY SERVER FOR RENDER FREE TIER ---
-class DummyServer(BaseHTTPRequestHandler):
-    def do_GET(self):
-        self.send_response(200)
-        self.send_header("Content-type", "text/html")
-        self.end_headers()
-        self.wfile.write(b"Bot is Running 24/7 Free!")
-
-def run_server():
-    # Render free tier port 10000 use karta hai
-    server = HTTPServer(('0.0.0.0', 10000), DummyServer)
-    server.serve_forever()
+# Vercel ke liye top-level 'app' variable
+app = Flask(__name__)
 
 # --- 2. DATABASE SETUP ---
+# Database file ko /tmp folder me banana hoga kyunki Vercel me sirf yahi folder writable hota hai
+DB_PATH = '/tmp/dating_bot.db'
+
 def init_db():
-    conn = sqlite3.connect('dating_bot.db')
+    conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS users (
@@ -39,6 +32,21 @@ def init_db():
 
 init_db()
 user_data = {}
+
+# --- VERCEL WEBHOOK ROUTE ---
+@app.route('/' + API_TOKEN, methods=['POST'])
+def getMessage():
+    json_string = request.get_data().decode('utf-8')
+    update = telebot.types.Update.de_json(json_string)
+    bot.process_new_updates([update])
+    return "!", 200
+
+@app.route('/')
+def webhook():
+    bot.remove_webhook()
+    # Note: Vercel ke production URL par automatic webhook set karne ke liye ye zaroori hai
+    # Aap chahein toh is route ko ek baar browser me open kar sakte hain deploy hone ke baad
+    return "Bot is running!", 200
 
 # --- 3. MENUS ---
 def main_menu():
@@ -61,7 +69,7 @@ def target_gender_menu():
 @bot.message_handler(commands=['start'])
 def send_welcome(message):
     user_id = message.from_user.id
-    conn = sqlite3.connect('dating_bot.db')
+    conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
     cursor.execute("SELECT * FROM users WHERE user_id = ?", (user_id,))
     user = cursor.fetchone()
@@ -109,7 +117,7 @@ def process_about(message):
     user_data[user_id]['about'] = message.text
     data = user_data[user_id]
     
-    conn = sqlite3.connect('dating_bot.db')
+    conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
     cursor.execute('''
         INSERT OR REPLACE INTO users (user_id, name, gender, target_gender, country, city, about)
@@ -127,7 +135,7 @@ def handle_menu(message):
     text = message.text
 
     if text == "👤 View My Profile":
-        conn = sqlite3.connect('dating_bot.db')
+        conn = sqlite3.connect(DB_PATH)
         cursor = conn.cursor()
         cursor.execute("SELECT name, gender, country, city, about, stars FROM users WHERE user_id = ?", (user_id,))
         user = cursor.fetchone()
@@ -139,7 +147,7 @@ def handle_menu(message):
             bot.send_message(user_id, "Pehle /start karein.")
 
     elif text == "🔍 Find Profiles":
-        conn = sqlite3.connect('dating_bot.db')
+        conn = sqlite3.connect(DB_PATH)
         cursor = conn.cursor()
         cursor.execute("INSERT OR REPLACE INTO states (user_id, current_index) VALUES (?, 0)", (user_id, 0))
         conn.commit()
@@ -149,7 +157,7 @@ def handle_menu(message):
         bot.send_message(user_id, "Top Star profiles feature coming soon!")
 
 def show_next_profile(user_id, message):
-    conn = sqlite3.connect('dating_bot.db')
+    conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
     cursor.execute("SELECT target_gender FROM users WHERE user_id = ?", (user_id,))
     pref_res = cursor.fetchone()
@@ -194,7 +202,7 @@ def show_next_profile(user_id, message):
 def callback_listener(call):
     user_id = call.from_user.id
     if call.data == "next_profile":
-        conn = sqlite3.connect('dating_bot.db')
+        conn = sqlite3.connect(DB_PATH)
         cursor = conn.cursor()
         cursor.execute("SELECT current_index FROM states WHERE user_id = ?", (user_id,))
         res = cursor.fetchone()
@@ -206,19 +214,11 @@ def callback_listener(call):
         show_next_profile(user_id, call.message)
     elif call.data.startswith("star_"):
         target_id = int(call.data.split("_")[1])
-        conn = sqlite3.connect('dating_bot.db')
+        conn = sqlite3.connect(DB_PATH)
         cursor = conn.cursor()
         cursor.execute("UPDATE users SET stars = stars + 1 WHERE user_id = ?", (target_id,))
         conn.commit()
         conn.close()
         bot.answer_callback_query(call.id, "Aapne is profile ko 1 Star de diya! ⭐")
 
-if __name__ == '__main__':
-    # Web server ko alag thread me chalu karenge Render ko khush karne ke liye
-    server_thread = Thread(target=run_server)
-    server_thread.daemon = True
-    server_thread.start()
-    
-    print("Bot is polling...")
-    bot.infinity_polling()
-    
+# Vercel khud server run karta hai, isliye infinity_polling() hata diya hai.
