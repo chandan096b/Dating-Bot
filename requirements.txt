@@ -1,1 +1,3 @@
 pyTelegramBotAPI
+pysqlite3-binary
+
